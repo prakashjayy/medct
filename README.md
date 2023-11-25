@@ -15,24 +15,34 @@ clear jupyter notebook outputs jupyter nbconvert --clear-output --inplace *.ipyn
 - [24-Nov, 2023] Swin3D encoder 
 
 
-## Example 
+## Example - ConvNextV2Backbone
 ```python
 import torch 
-from medct.convnextv2 import ConvNextV2Config3d, ConvNextV2Model3d
+from medct.convnextv2 import ConvNextV2Config3d, ConvNextV2Backbone3d
 
 config = ConvNextV2Config3d(dims=[40, 80], num_stages=2, num_channels=1, image_size=(96, 192, 192), depths=[3, 3])
-model = ConvNextV2Model3d(config)
+model = ConvNextV2Backbone3d(config)
 out = model(torch.randn((1, 1, 96, 192, 192)), output_hidden_states=True)
-print([i.shape for i in out.hidden_states])
+print([i.shape for i in out.feature_maps])
 ```
 - out
 ```bash
-[torch.Size([1, 40, 24, 48, 48]), 
- torch.Size([1, 40, 24, 48, 48]), 
- torch.Size([1, 80, 12, 24, 24])]
+[torch.Size([2, 40, 48, 48, 48]), 
+ torch.Size([2, 80, 24, 24, 24])]
 ```
 
-## Next steps
-- Enable 3D Segmentation for all the networks 
-- Enable 3D classification for all the networks
-- Enbale MIM for swin transformers. 
+## Example - Swin3DBackbone
+```python
+import torch 
+from medct.swin3d import Swin3dBackbone, Swin3dConfig
+config = Swin3dConfig(embed_dim=96, depths=(2, 4), out_features=["stage1", "stage2"])
+model = Swin3dBackbone(config)
+out = model(torch.randn((1, 1, 96, 192, 192)), output_hidden_states=True)
+print([i.shape for i in out.feature_maps])
+```
+- out
+```bash
+[torch.Size([1, 96, 48, 48, 48]),
+ torch.Size([1, 192, 24, 24, 24])
+ ]
+```

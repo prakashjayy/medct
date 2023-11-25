@@ -2,7 +2,8 @@
 
 # %% auto 0
 __all__ = ['ConvNextV2GRN3d', 'ConvNextV2LayerNorm3d', 'ConvNextV2Embeddings3d', 'ConvNextV2Layer3d', 'ConvNextV2Stage3d',
-           'ConvNextV2Encoder3d', 'ConvNextV2Config3d', 'ConvNextV2PreTrainedModel3d', 'ConvNextV2Model3d']
+           'ConvNextV2Encoder3d', 'ConvNextV2Config3d', 'ConvNextV2PreTrainedModel3d', 'ConvNextV2Model3d',
+           'ConvNextV2Backbone3d']
 
 # %% ../nbs/00_convnextv2.ipynb 2
 import torch
@@ -15,6 +16,8 @@ from transformers.activations import ACT2FN
 from transformers.modeling_utils import PreTrainedModel
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils.backbone_utils import BackboneConfigMixin, get_aligned_output_features_output_indices
+from transformers.modeling_outputs import BackboneOutput
+from transformers.utils.backbone_utils import BackboneMixin
 
 # %% ../nbs/00_convnextv2.ipynb 16
 class ConvNextV2GRN3d(nn.Module):
@@ -328,4 +331,64 @@ class ConvNextV2Model3d(ConvNextV2PreTrainedModel3d):
             last_hidden_state=last_hidden_state,
             pooler_output=pooled_output,
             hidden_states=encoder_outputs.hidden_states,
+        )
+
+# %% ../nbs/00_convnextv2.ipynb 54
+# Copied from transformers.models.convnext.modeling_convnext.ConvNextBackbone with CONVNEXT->CONVNEXTV2,ConvNext->ConvNextV2,facebook/convnext-tiny-224->facebook/convnextv2-tiny-1k-224
+class ConvNextV2Backbone3d(ConvNextV2PreTrainedModel3d, BackboneMixin):
+    def __init__(self, config):
+        super().__init__(config)
+        super()._init_backbone(config)
+
+        self.embeddings = ConvNextV2Embeddings3d(config)
+        self.encoder = ConvNextV2Encoder3d(config)
+        self.num_features = [config.hidden_sizes[0]] + config.hidden_sizes
+
+        # Add layer norms to hidden states of out_features
+        hidden_states_norms = {}
+        for stage, num_channels in zip(self._out_features, self.channels):
+            hidden_states_norms[stage] = ConvNextV2LayerNorm3d(num_channels, data_format="channels_first")
+        self.hidden_states_norms = nn.ModuleDict(hidden_states_norms)
+
+        # initialize weights and apply final processing
+        self.post_init()
+
+    def forward(
+        self,
+        pixel_values: torch.Tensor,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> BackboneOutput:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+
+        embedding_output = self.embeddings(pixel_values)
+
+        outputs = self.encoder(
+            embedding_output,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        hidden_states = outputs.hidden_states
+
+        feature_maps = ()
+        # we skip the stem
+        for idx, (stage, hidden_state) in enumerate(zip(self.stage_names[1:], hidden_states[1:])):
+            if stage in self.out_features:
+                hidden_state = self.hidden_states_norms[stage](hidden_state)
+                feature_maps += (hidden_state,)
+
+        if not return_dict:
+            output = (feature_maps,)
+            if output_hidden_states:
+                output += (outputs.hidden_states,)
+            return output
+
+        return BackboneOutput(
+            feature_maps=feature_maps,
+            hidden_states=outputs.hidden_states if output_hidden_states else None,
+            attentions=None,
         )
