@@ -66,7 +66,7 @@ class ConvNextV2LayerNorm3d(nn.Module):
             x = self.weight[:, None, None, None] * x + self.bias[:, None, None, None] #Only this line changed
         return x
 
-# %% ../nbs/00_convnextv2.ipynb 26
+# %% ../nbs/00_convnextv2.ipynb 33
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2Embeddings with 
 # ConvNextV2Embeddings -> ConvNextV2Embeddings3D
 class ConvNextV2Embeddings3d(nn.Module):
@@ -74,15 +74,16 @@ class ConvNextV2Embeddings3d(nn.Module):
     found in src/transformers/models/swin/modeling_swin.py.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, use_mask_token=False):
         super().__init__()
         self.patch_embeddings = nn.Conv3d(
             config.num_channels, config.hidden_sizes[0], kernel_size=config.patch_size, stride=config.patch_size
         )
         self.layernorm = ConvNextV2LayerNorm3d(config.hidden_sizes[0], eps=1e-6, data_format="channels_first")
         self.num_channels = config.num_channels
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.hidden_sizes[0])) if use_mask_token else None
 
-    def forward(self, pixel_values: torch.FloatTensor) -> torch.Tensor:
+    def forward(self, pixel_values: torch.FloatTensor, bool_masked_pos=None) -> torch.Tensor:
         num_channels = pixel_values.shape[1]
         if num_channels != self.num_channels:
             raise ValueError(
@@ -90,9 +91,18 @@ class ConvNextV2Embeddings3d(nn.Module):
             )
         embeddings = self.patch_embeddings(pixel_values)
         embeddings = self.layernorm(embeddings)
+        if bool_masked_pos is not None:
+            batch_size, C, depth, height, width = embeddings.shape
+            embeddings = embeddings.flatten(2).transpose(1, 2)
+            batch_size, seq_len, _ = embeddings.shape
+            mask_tokens = self.mask_token.expand(batch_size, seq_len, -1)
+            # replace the masked visual tokens by mask_tokens
+            mask = bool_masked_pos.unsqueeze(-1).type_as(mask_tokens)
+            embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
+            embeddings = embeddings.permute(0, 2, 1).view(batch_size, C, depth, height, width)
         return embeddings
 
-# %% ../nbs/00_convnextv2.ipynb 31
+# %% ../nbs/00_convnextv2.ipynb 41
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2Layer 
 class ConvNextV2Layer3d(nn.Module):
     """This corresponds to the `Block` class in the original implementation.
@@ -136,7 +146,7 @@ class ConvNextV2Layer3d(nn.Module):
         x = input + self.drop_path(x)
         return x
 
-# %% ../nbs/00_convnextv2.ipynb 36
+# %% ../nbs/00_convnextv2.ipynb 46
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2Stage 
 class ConvNextV2Stage3d(nn.Module):
     """ConvNeXTV23D stage, consisting of an optional downsampling layer + multiple residual blocks.
@@ -169,7 +179,7 @@ class ConvNextV2Stage3d(nn.Module):
         hidden_states = self.layers(hidden_states)
         return hidden_states
 
-# %% ../nbs/00_convnextv2.ipynb 38
+# %% ../nbs/00_convnextv2.ipynb 48
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2Encoder 
 class ConvNextV2Encoder3d(nn.Module):
     def __init__(self, config):
@@ -219,7 +229,7 @@ class ConvNextV2Encoder3d(nn.Module):
 
 
 
-# %% ../nbs/00_convnextv2.ipynb 39
+# %% ../nbs/00_convnextv2.ipynb 49
 # Copied from transformers.models.convnextv2.configuration_convnextv2.ConvNextV2Config
 class ConvNextV2Config3d(BackboneConfigMixin, PretrainedConfig):
     model_type = "convnextv23d"
@@ -257,7 +267,7 @@ class ConvNextV2Config3d(BackboneConfigMixin, PretrainedConfig):
             out_features=out_features, out_indices=out_indices, stage_names=self.stage_names
         )
 
-# %% ../nbs/00_convnextv2.ipynb 44
+# %% ../nbs/00_convnextv2.ipynb 54
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2PreTrainedModel 
 class ConvNextV2PreTrainedModel3d(PreTrainedModel):
     """
@@ -281,14 +291,14 @@ class ConvNextV2PreTrainedModel3d(PreTrainedModel):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-# %% ../nbs/00_convnextv2.ipynb 46
+# %% ../nbs/00_convnextv2.ipynb 56
 # Copied from transformers.models.convnextv2.modeling_convnextv2.ConvNextV2Model 
 class ConvNextV2Model3d(ConvNextV2PreTrainedModel3d):
-    def __init__(self, config):
+    def __init__(self, config, use_mask_token=False):
         super().__init__(config)
         self.config = config
-
-        self.embeddings = ConvNextV2Embeddings3d(config)
+        self.use_mask_token = use_mask_token
+        self.embeddings = ConvNextV2Embeddings3d(config, use_mask_token=use_mask_token)
         self.encoder = ConvNextV2Encoder3d(config)
 
         # final layernorm layer
@@ -300,6 +310,7 @@ class ConvNextV2Model3d(ConvNextV2PreTrainedModel3d):
     def forward(
         self,
         pixel_values: torch.FloatTensor = None,
+        bool_masked_pos: Optional[bool] = None, 
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPoolingAndNoAttention]:
@@ -311,7 +322,7 @@ class ConvNextV2Model3d(ConvNextV2PreTrainedModel3d):
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
 
-        embedding_output = self.embeddings(pixel_values)
+        embedding_output = self.embeddings(pixel_values, bool_masked_pos)
 
         encoder_outputs = self.encoder(
             embedding_output,
@@ -333,14 +344,14 @@ class ConvNextV2Model3d(ConvNextV2PreTrainedModel3d):
             hidden_states=encoder_outputs.hidden_states,
         )
 
-# %% ../nbs/00_convnextv2.ipynb 54
+# %% ../nbs/00_convnextv2.ipynb 64
 # Copied from transformers.models.convnext.modeling_convnext.ConvNextBackbone with CONVNEXT->CONVNEXTV2,ConvNext->ConvNextV2,facebook/convnext-tiny-224->facebook/convnextv2-tiny-1k-224
 class ConvNextV2Backbone3d(ConvNextV2PreTrainedModel3d, BackboneMixin):
-    def __init__(self, config):
+    def __init__(self, config, use_mask_token=False):
         super().__init__(config)
         super()._init_backbone(config)
 
-        self.embeddings = ConvNextV2Embeddings3d(config)
+        self.embeddings = ConvNextV2Embeddings3d(config, use_mask_token=use_mask_token)
         self.encoder = ConvNextV2Encoder3d(config)
         self.num_features = [config.hidden_sizes[0]] + config.hidden_sizes
 
@@ -356,6 +367,7 @@ class ConvNextV2Backbone3d(ConvNextV2PreTrainedModel3d, BackboneMixin):
     def forward(
         self,
         pixel_values: torch.Tensor,
+        bool_masked_pos: Optional[bool] = None, 
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> BackboneOutput:
@@ -364,7 +376,7 @@ class ConvNextV2Backbone3d(ConvNextV2PreTrainedModel3d, BackboneMixin):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
 
-        embedding_output = self.embeddings(pixel_values)
+        embedding_output = self.embeddings(pixel_values, bool_masked_pos)
 
         outputs = self.encoder(
             embedding_output,
