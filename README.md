@@ -13,6 +13,7 @@ clear jupyter notebook outputs jupyter nbconvert --clear-output --inplace *.ipyn
 ## Updates 
 - [11-Nov, 2023] ConvNextV23d encoder
 - [24-Nov, 2023] Swin3D encoder 
+- [26-Nov, 2023] Swin3D masked image modelling
 
 
 ## Example - ConvNextV2Backbone
@@ -45,4 +46,16 @@ print([i.shape for i in out.feature_maps])
 [torch.Size([1, 96, 48, 48, 48]),
  torch.Size([1, 192, 24, 24, 24])
  ]
+```
+
+## Example - SwinMIM
+```python
+import torch 
+from medct.swin3d import Swin3dConfig
+from medct.swin3dmim import Swin3dForMaskedImageModeling, mask_patches
+config = Swin3dConfig(image_size=(96, 192, 192), depths=[2, 2], num_heads=[3, 6], patch_size=(8, 16, 16), encoder_stride=(16, 32, 32))
+model = Swin3dForMaskedImageModeling(config)
+bool_masked_pos = mask_patches(model.num_patches, 0.4)
+out = model(torch.randn((1, 1, )+model.config.image_size), bool_masked_pos=bool_masked_pos)
+print(out.loss)
 ```
