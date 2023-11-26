@@ -37,7 +37,7 @@ print([i.shape for i in out.feature_maps])
 ```python
 import torch 
 from medct.convnextv2 import ConvNextV2Config3d
-from medct.swin3dmim import ConvNextV2ForMaskedImageModeling, mask_patches
+from medct.convnextv2mim import ConvNextV2ForMaskedImageModeling, mask_patches
 config = ConvNextV2Config3d(num_channels=1, image_size=(96, 192, 192), patch_size=(8, 16, 16), hidden_sizes=[40, 80], depths=[2, 2])
 model = ConvNextV2ForMaskedImageModeling(config)
 bool_masked_pos = mask_patches(model.num_patches, 0.4)
