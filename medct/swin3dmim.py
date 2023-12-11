@@ -62,9 +62,9 @@ class Swin3dForMaskedImageModeling(Swin3dPreTrainedModel):
             PixelShuffle3d(config.encoder_stride),
         )
         
-        self.num_patches = (self.config.image_size[0] // self.config.patch_size[0]) * \
-                           (self.config.image_size[1] // self.config.patch_size[1]) * \
-                           (self.config.image_size[2] // self.config.patch_size[2])
+        self.num_patches = (config.image_size[0] // config.patch_size[0]) * \
+                           (config.image_size[1] // config.patch_size[1]) * \
+                           (config.image_size[2] // config.patch_size[2])
 
         # Initialize weights and apply final processing
         self.post_init()

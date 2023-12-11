@@ -72,3 +72,30 @@ bool_masked_pos = mask_patches(model.num_patches, 0.4)
 out = model(torch.randn((1, 1, )+model.config.image_size), bool_masked_pos=bool_masked_pos)
 print(out.loss)
 ```
+
+
+## Example - VitDet3dBackbone
+```python
+import torch 
+from medct.vitdet3d import VitDet3dBackbone, VitDetConfig
+config = VitDetConfig(image_size=(96, 192, 192), 
+                      patch_size=(4, 8, 8), 
+                      hidden_size=96,
+                      num_channels=1,
+                      use_relative_position_embeddings=True, 
+                      window_block_indices=list(range(8)),
+                      window_size =(4, 4, 4), 
+                      out_indices = [2, 6, 8], 
+                      num_hidden_layers= 8,
+                      out_features = ["stage2", "stage6", "stage8"], 
+                      stage_names = ["stem"]+[f"stage{i}" for i in range(1, 9)])
+model = VitDet3dBackbone(config)
+out = model(torch.randn((1, 1, 96, 192, 192)), output_hidden_states=True)
+print([i.shape for i in out.feature_maps])
+```
+- out
+```bash
+[torch.Size([1, 96, 24, 24, 24]), 
+torch.Size([1, 96, 24, 24, 24]), 
+torch.Size([1, 96, 24, 24, 24])]
+```
