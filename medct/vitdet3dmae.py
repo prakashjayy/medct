@@ -60,6 +60,13 @@ class ViTDet3DMAEConfig(VitDetConfig):
         self.norm_pix_loss = norm_pix_loss
         self.patch_size = patch_size
 
+        self.grid_size = (
+            self.image_size[0] // self.patch_size[0],
+            self.image_size[1] // self.patch_size[1],
+            self.image_size[2] // self.patch_size[2],
+        )
+        self.num_patches = self.grid_size[0] * self.grid_size[1] * self.grid_size[2]
+
 # %% ../nbs/03_vitdet3dmae.ipynb 12
 def get_3d_position_embeddings(embedding_size, grid_size):
     if embedding_size % 6 != 0:
@@ -108,14 +115,9 @@ class ViTDet3DMAEPatchEmbeddings(nn.Module):
         if not isinstance(patch_size, collections.abc.Iterable) or len(patch_size) != 3:
             raise ValueError("patch_size must be given as 3D iterable")
 
-        grid_size = (image_size[0] // patch_size[0], image_size[1] // patch_size[1], image_size[2] // patch_size[2])
-        num_patches = grid_size[0] * grid_size[1] * grid_size[2]
-
         self.image_size = image_size
         self.patch_size = patch_size
         self.num_channels = num_channels
-        self.grid_size = grid_size
-        self.num_patches = num_patches
 
         self.projection = nn.Conv3d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
 
@@ -147,11 +149,9 @@ class ViTDet3DMAEEmbeddings(nn.Module):
         self.config = config
 
         self.patch_embeddings = ViTDet3DMAEPatchEmbeddings(config)
-        self.num_patches = self.patch_embeddings.num_patches
-        self.grid_size = self.patch_embeddings.grid_size
 
         # Positional embeddings
-        num_positions = self.num_patches  # Not adding class token as the patches can't be flattened in ViTDet3D
+        num_positions = self.config.num_patches  # Not adding class token as the patches can't be flattened in ViTDet3D
         self.position_embeddings = nn.Parameter(
             torch.zeros(1, config.hidden_size, num_positions), requires_grad=config.learnable_position_embeddings
         )
@@ -160,7 +160,7 @@ class ViTDet3DMAEEmbeddings(nn.Module):
     def initialize_weights(self):
         if not self.config.learnable_position_embeddings:
             # initialize (and freeze) position embeddings by sin-cos embedding
-            position_embeddings = get_3d_position_embeddings(self.config.hidden_size, self.grid_size)
+            position_embeddings = get_3d_position_embeddings(self.config.hidden_size, self.config.grid_size)
             self.position_embeddings.data.copy_(torch.from_numpy(position_embeddings.T).float().unsqueeze(0))
 
         # initialize patch_embeddings like nn.Linear (instead of nn.Conv2d)
@@ -453,14 +453,19 @@ class ViTDet3DMAEForPreTraining(ViTDet3DMAEPreTrainedModel):
         self.config = config
 
         self.vitdet3d = ViTDet3DMAEModel(config)
-        self.decoder = ViTDet3DMAEDecoder(config, grid_size=self.vitdet3d.embeddings.grid_size)
+        self.decoder = ViTDet3DMAEDecoder(config, grid_size=config.grid_size)
 
         # Initialize weights and apply final processing
         self.post_init()
 
     def forward_loss(self, pixel_values, pred, masks_inverse):
         B, C, Z, Y, X = pixel_values.shape
-        target = pixel_values.reshape(*pred.shape)
+        nD, nH, nW = self.config.grid_size
+        D, H, W = self.config.patch_size
+
+        target = pixel_values.reshape(B, C, nD, D, nH, H, nW, W)
+        target = rearrange(target, "b c nD D nH H nW W -> b c nD nH nW D H W")
+        target = target.reshape(*pred.shape)
 
         loss = (pred - target) ** 2
         loss = loss.mean(dim=1)  # [N, L], mean loss per patch
