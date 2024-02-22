@@ -339,7 +339,7 @@ class ViTDet3DMAEDecoder(nn.Module):
 
         self.decoder_norm = nn.LayerNorm(config.decoder_hidden_size, eps=config.layer_norm_eps)
         self.decoder_pred = nn.Linear(
-            config.decoder_hidden_size, np.prod(config.patch_size) * config.num_channels, bias=True
+            config.decoder_hidden_size, config.num_channels * np.prod(config.patch_size), bias=True
         )  # encoder to decoder
         self.gradient_checkpointing = False
         self.config = config
@@ -362,28 +362,34 @@ class ViTDet3DMAEDecoder(nn.Module):
         output_hidden_states=False,
         return_dict=True,
     ):
+        # npZ etc. is the number of patches after uniform sampling
+        # npD etc. is the number of patches in the original image
+        # pZ etc. is the patch size
+        # C is the number of channels in th eoriginal image
+        # H can be any hidden size
+
         # embed tokens
-        (B, C, nD, nH, nW) = hidden_states.shape
-        hidden_states = hidden_states.permute(0, 2, 3, 4, 1).reshape(-1, C)
+        # (b, encoder_hidden_size, z, y, x)
+        hidden_states = rearrange(hidden_states, "b h npZ npY npX -> b npZ npY npX h")
         x = self.decoder_embed(hidden_states)
-        x = x.reshape(B, nD, nH, nW, self.config.decoder_hidden_size)
-        x = x.permute(0, 4, 1, 2, 3)
+        x = rearrange(x, "b npZ npY npX h -> b h npZ npY npX")
+        # (b, decoder_hidden_size, z, y, x)
 
         # Create mask tokens array
-        D, H, W = nD * 2, nH * 2, nW * 2
+        B, _, npZ, npY, npX = x.shape
+        npD, npH, npW = npZ * 2, npY * 2, npX * 2
         if self.config.mask_ratio == 0.75:
-            D = nD
-        mask_tokens = self.mask_token.repeat(B, 1, D, H, W)
+            npD = npZ
+        mask_tokens = self.mask_token.repeat(B, 1, npD, npH, npW)
 
         # Add hidden states to this
         x = mask_tokens.masked_scatter(masks.unsqueeze(1).bool(), x)
 
         # add pos embed
-        hidden_states = x + self.position_embeddings.reshape(1, -1, D, H, W)
+        hidden_states = x + self.position_embeddings.reshape(1, -1, npD, npH, npW)
 
         # Flatten hidden states and reorder them
-        hidden_states = hidden_states.reshape(B, self.config.decoder_hidden_size, -1)
-        hidden_states = hidden_states.permute(0, 2, 1)
+        hidden_states = rearrange(hidden_states, "b h npD npH npW -> b (npD npH npW) h")
 
         # apply Transformer layers (blocks)
         all_hidden_states = () if output_hidden_states else None
@@ -414,19 +420,10 @@ class ViTDet3DMAEDecoder(nn.Module):
 
         # predictor projection
         logits = self.decoder_pred(hidden_states)
-        logits = logits.permute(0, 2, 1)
 
-        # Reshaping back to image size
-        logits = logits.reshape(B, -1, D, H, W)
-        # p1, p2, p3 = self.config.patch_size
-        # logits = rearrange(
-        #     logits,
-        #     "b (c p1 p2 p3) nD nH nW -> b c (nD p1) (nH p2) (nW p3)",
-        #     c=self.config.num_channels,
-        #     p1=p1,
-        #     p2=p2,
-        #     p3=p3,
-        # )  # This reshapes the logits to the original pixel_values shape
+        # Reshaping back to image patches
+        pD, pH, pW = self.config.patch_size
+        logits = rearrange(logits, "b (npD npH npW) h -> b h npD npH npW", npD=npD, npH=npH, npW=npW)
 
         if not return_dict:
             return tuple(v for v in [logits, all_hidden_states, all_self_attentions] if v is not None)
@@ -458,14 +455,46 @@ class ViTDet3DMAEForPreTraining(ViTDet3DMAEPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    def forward_loss(self, pixel_values, pred, masks_inverse):
-        B, C, Z, Y, X = pixel_values.shape
-        nD, nH, nW = self.config.grid_size
-        D, H, W = self.config.patch_size
+    def patchify(self, pixel_values):
+        B, C, _, _, _ = pixel_values.shape
+        npZ, npY, npX = self.config.grid_size
+        pZ, pY, pX = self.config.patch_size
 
-        target = pixel_values.reshape(B, C, nD, D, nH, H, nW, W)
-        target = rearrange(target, "b c nD D nH H nW W -> b c nD nH nW D H W")
-        target = target.reshape(*pred.shape)
+        target = rearrange(
+            pixel_values,
+            "b c (npZ pZ) (npY pY) (npX pX) -> b (c pZ pY pX) npZ npY npX",
+            c=C,
+            npZ=npZ,
+            npY=npY,
+            npX=npX,
+            pZ=pZ,
+            pY=pY,
+            pX=pX,
+        )
+
+        return target
+
+    def unpatchify(self, logits):
+        C = self.config.num_channels
+        B, _, npZ, npY, npX = logits.shape
+        pZ, pY, pX = self.config.patch_size
+
+        target = rearrange(
+            logits,
+            "b (c pZ pY pX) npZ npY npX -> b c (npZ pZ) (npY pY) (npX pX)",
+            c=C,
+            npZ=npZ,
+            npY=npY,
+            npX=npX,
+            pZ=pZ,
+            pY=pY,
+            pX=pX,
+        )
+
+        return target
+
+    def forward_loss(self, pixel_values, pred, masks_inverse):
+        target = self.patchify(pixel_values)
 
         loss = (pred - target) ** 2
         loss = loss.mean(dim=1)  # [N, L], mean loss per patch
