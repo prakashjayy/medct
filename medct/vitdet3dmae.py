@@ -28,8 +28,8 @@ class ViTDet3DMAEConfig(VitDetConfig):
         decoder_hidden_size=384,
         decoder_intermediate_size=1536,
         decoder_learnable_position_embeddings=False,
-        decoder_num_attention_heads=16,
-        decoder_num_hidden_layers=8,
+        decoder_num_attention_heads=12,
+        decoder_num_hidden_layers=1,
         hidden_dropout_prob=0.0,
         hidden_size=768,
         image_size=(64, 512, 512),
@@ -37,6 +37,8 @@ class ViTDet3DMAEConfig(VitDetConfig):
         learnable_position_embeddings=False,
         mask_ratio=0.875,
         norm_pix_loss=False,
+        num_attention_heads=12,
+        num_hidden_layers=12,
         patch_size=(2, 32, 32),
         *args,
         **kwargs,
@@ -58,6 +60,8 @@ class ViTDet3DMAEConfig(VitDetConfig):
         self.learnable_position_embeddings = learnable_position_embeddings
         self.mask_ratio = mask_ratio
         self.norm_pix_loss = norm_pix_loss
+        self.num_attention_heads = num_attention_heads
+        self.num_hidden_layers = num_hidden_layers
         self.patch_size = patch_size
 
         self.grid_size = (
