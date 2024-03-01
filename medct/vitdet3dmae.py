@@ -173,38 +173,41 @@ class ViTDet3DMAEEmbeddings(nn.Module):
 
     def uniform_sampling(self, embeddings: torch.Tensor):
         # embeddings: (b, hidden_size, z, y, x)
-        _, _, Z, Y, X = embeddings.shape
+        B, _, Z, Y, X = embeddings.shape
         assert Z % 2 == 0 and Y % 2 == 0 and X % 2 == 0, "Z, Y, X must be even"
 
-        # Only works if mask_ratio is 0.75 or 0.875
-        assert self.config.mask_ratio in {0.75, 0.875}, "Mask ratio must be 0.75 or 0.875"
+        # Only works if mask_ratio is 0, 0.75, or 0.875
+        assert self.config.mask_ratio in {0, 0.75, 0.875}, "Mask ratio must be 0.75 or 0.875 (or 0)"
 
-        masks = []
-        for _ in range(len(embeddings)):
-            # Perform uniform sampling. Select one patch in a 2x2x2 cube.
-            # Also add the diagonally opposite patch if mask_ratio == 0.75.
-            num_decisions = X * Y * Z // 8
-            if self.config.mask_ratio == 0.75:
-                mask1 = np.eye(4, dtype="int").repeat(num_decisions, axis=0)  # (num_decisions * 4, 4)
-                np.random.shuffle(mask1)
-                mask1 = mask1[:num_decisions]  # (num_decisions, 4)
-                mask2 = mask1.copy()
+        if self.config.mask_ratio == 0:
+            masks = torch.ones(B, Z, Y, X, device=embeddings.device, dtype=torch.int8)
+        else:
+            masks = []
+            for _ in range(len(embeddings)):
+                # Perform uniform sampling. Select one patch in a 2x2x2 cube.
+                # Also add the diagonally opposite patch if mask_ratio == 0.75.
+                num_decisions = X * Y * Z // 8
+                if self.config.mask_ratio == 0.75:
+                    mask1 = np.eye(4, dtype="int").repeat(num_decisions, axis=0)  # (num_decisions * 4, 4)
+                    np.random.shuffle(mask1)
+                    mask1 = mask1[:num_decisions]  # (num_decisions, 4)
+                    mask2 = mask1.copy()
 
-                mask2[:, (0, 3)] = mask2[:, (3, 0)]
-                mask2[:, (1, 2)] = mask2[:, (2, 1)]
-                mask = np.concatenate([mask1, mask2], axis=1)  # (num_decisions, 8)
-            else:
-                mask = np.eye(8, dtype="int").repeat(num_decisions, axis=0)  # (num_decisions * 8, 8)
-                np.random.shuffle(mask)
-                mask = mask[:num_decisions]  # (num_decisions, 8)
+                    mask2[:, (0, 3)] = mask2[:, (3, 0)]
+                    mask2[:, (1, 2)] = mask2[:, (2, 1)]
+                    mask = np.concatenate([mask1, mask2], axis=1)  # (num_decisions, 8)
+                else:
+                    mask = np.eye(8, dtype="int").repeat(num_decisions, axis=0)  # (num_decisions * 8, 8)
+                    np.random.shuffle(mask)
+                    mask = mask[:num_decisions]  # (num_decisions, 8)
 
-            mask = rearrange(
-                mask, "(d h w) (p1 p2 p3) -> (d p1) (h p2) (w p3)", d=Z // 2, h=Y // 2, w=X // 2, p1=2, p2=2, p3=2
-            )
-            masks.append(mask)
+                mask = rearrange(
+                    mask, "(d h w) (p1 p2 p3) -> (d p1) (h p2) (w p3)", d=Z // 2, h=Y // 2, w=X // 2, p1=2, p2=2, p3=2
+                )
+                masks.append(mask)
+            masks = np.stack(masks, axis=0)
 
-        masks = np.stack(masks, axis=0)
-        masks = torch.tensor(masks, device=embeddings.device, dtype=torch.int8)
+            masks = torch.tensor(masks, device=embeddings.device, dtype=torch.int8)
 
         return masks
 
@@ -221,9 +224,11 @@ class ViTDet3DMAEEmbeddings(nn.Module):
         masks = self.uniform_sampling(embeddings)
 
         # Get masked embeddings
-        new_Z, new_Y, new_X = Z // 2, Y // 2, X // 2
-        if self.config.mask_ratio == 0.75:
-            new_Z = Z
+        new_Z, new_Y, new_X = Z, Y, X
+        if self.config.mask_ratio == 0.875:
+            new_Z, new_Y, new_X = Z // 2, Y // 2, X // 2
+        elif self.config.mask_ratio == 0.75:
+            new_Z, new_Y, new_X = Z, Y // 2, X // 2
         embeddings = torch.masked_select(embeddings, masks.unsqueeze(1).bool()).reshape(B, C, new_Z, new_Y, new_X)
 
         return embeddings, masks
@@ -381,9 +386,11 @@ class ViTDet3DMAEDecoder(nn.Module):
 
         # Create mask tokens array
         B, _, npZ, npY, npX = x.shape
-        npD, npH, npW = npZ * 2, npY * 2, npX * 2
-        if self.config.mask_ratio == 0.75:
-            npD = npZ
+        npD, npH, npW = npZ, npY, npX
+        if self.config.mask_ratio == 0.875:
+            npD, npH, npW = npZ * 2, npY * 2, npX * 2
+        elif self.config.mask_ratio == 0.75:
+            npD, npH, npW = npZ, npY * 2, npX * 2
         mask_tokens = self.mask_token.repeat(B, 1, npD, npH, npW)
 
         # Add hidden states to this
@@ -502,6 +509,45 @@ class ViTDet3DMAEForPreTraining(ViTDet3DMAEPreTrainedModel):
 
         loss = (pred - target) ** 2
         loss = loss.mean(dim=1)  # [N, L], mean loss per patch
+
+        # def create_point_symmetric_tensor_3d(shape, min_value, max_value, power=2):
+        #     """
+        #     Creates a 3D torch tensor with point symmetry around the center, with a customizable decrease rate.
+
+        #     Args:
+        #     shape: A tuple representing the desired shape of the tensor (depth, rows, columns).
+        #     min_value: The minimum value for the tensor.
+        #     max_value: The maximum value for the tensor.
+        #     power: The exponent controlling the decrease rate (higher power leads to faster decrease).
+
+        #     Returns:
+        #     A 3D torch tensor with point symmetry and controlled decrease rate.
+        #     """
+        #     depth, rows, cols = shape
+        #     center_depth, center_row, center_col = depth // 2, rows // 2, cols // 2
+
+        #     # Create distance grid (Corrected)
+        #     x_coords = torch.arange(cols).reshape(1, 1, -1).repeat(depth, rows, 1) - center_col
+        #     y_coords = torch.arange(rows).reshape(1, -1, 1).repeat(depth, 1, cols) - center_row
+        #     z_coords = torch.arange(depth).reshape(-1, 1, 1).repeat(1, rows, cols) - center_depth
+
+        #     distance_grid = torch.sqrt(x_coords**2 + y_coords**2 + z_coords**2)
+
+        #     # Apply power for slower/faster decrease (based on power value)
+        #     distance_grid = distance_grid**power
+
+        #     # Normalize distance grid to range between 0 and 1
+        #     distance_grid = (distance_grid - distance_grid.min()) / (distance_grid.max() - distance_grid.min())
+
+        #     # Invert distance to get decreasing values from center
+        #     inverted_distance = 1 - distance_grid
+
+        #     # Scale inverted distance to desired range
+        #     output = inverted_distance * (max_value - min_value) + min_value
+
+        #     return output
+
+        # loss *= create_point_symmetric_tensor_3d(loss.shape[1:], 0, 1, 1.5).to(loss.device)
 
         loss = (loss * masks_inverse).sum() / masks_inverse.sum()  # mean loss on removed patches
         return loss
