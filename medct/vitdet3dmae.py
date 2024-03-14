@@ -36,7 +36,7 @@ class ViTDet3DMAEConfig(VitDetConfig):
         image_size=(32, 256, 256),
         intermediate_size=3072,
         learnable_position_embeddings=False,
-        mask_ratio=0.875,
+        mask_ratio=0.0,
         norm_pix_loss=False,
         num_attention_heads=12,
         num_hidden_layers=12,
@@ -53,6 +53,8 @@ class ViTDet3DMAEConfig(VitDetConfig):
         assert self.use_relative_position_embeddings is False, "use_relative_position_embeddings is not supported"
         self.use_relative_position_embeddings = False
         self.use_absolute_position_embeddings = True
+
+        assert pretraining or mask_ratio == 0, "mask_ratio should be 0 if not pretraining"
 
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.decoder_hidden_size = decoder_hidden_size
