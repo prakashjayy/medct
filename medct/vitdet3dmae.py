@@ -86,10 +86,16 @@ class ViTDet3DMAEConfig(VitDetConfig):
         if not isinstance(self.patch_size, collections.abc.Iterable) or len(self.patch_size) != 3:
             raise ValueError("patch_size must be given as 3D iterable")
 
+        assert (
+            torch.remainder(torch.tensor(self.pretraining_image_size), torch.tensor(self.patch_size)).sum() == 0
+        ), "Image size must be divisible by patch size"
+
         assert self.learnable_position_embeddings is False, "Learnable position embeddings are not supported yet"
         assert (
             self.decoder_learnable_position_embeddings is False
         ), "Learnable position embeddings are not supported yet"
+
+        assert self.hidden_size % self.num_attention_heads == 0, "hidden_size must be divisible by num_attention_heads"
 
     def get_grid_size_and_num_patches(self, image_size):
         grid_size = (
@@ -166,7 +172,7 @@ class ViTDet3DMAEPatchEmbeddings(nn.Module):
         if len(image_size) != 3:
             raise ValueError("Image size must be 3D")
 
-        if self.config.pretraining:
+        if self.config.pretraining and self.training:
             if self.config.pretraining_image_size != image_size:
                 raise ValueError(
                     "Make sure that the spatial dimensions of the pixel values match with the ones set in the "
@@ -201,7 +207,7 @@ class ViTDet3DMAEEmbeddings(nn.Module):
     def uniform_sampling(self, embeddings: torch.Tensor):
         # embeddings: (b, hidden_size, z, y, x)
         B, _, Z, Y, X = embeddings.shape
-        assert Z % 2 == 0 and Y % 2 == 0 and X % 2 == 0, "Z, Y, X must be even"
+        assert Z % 2 == 0 and Y % 2 == 0 and X % 2 == 0, f"Z, Y, X must be even. Got shape {embeddings.shape}"
 
         # Only works if mask_ratio is 0, 0.75, or 0.875
         assert self.config.mask_ratio in {0, 0.75, 0.875}, "Mask ratio must be 0.75 or 0.875 (or 0)"
