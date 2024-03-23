@@ -13,7 +13,7 @@ import collections
 
 from copy import deepcopy
 from dataclasses import dataclass
-from einops import rearrange
+from einops import rearrange, repeat
 from .vitdet3d import VitDetConfig, VitDet3dEncoder, VitDet3dPreTrainedModel
 from torch import nn
 from transformers.models.vit_mae.modeling_vit_mae import ViTMAELayer
@@ -140,14 +140,19 @@ def get_3d_position_embeddings(embedding_size, grid_size, patch_size=(1, 1, 1)):
         position_embeddings.append(emb)
 
     position_embeddings = np.concatenate(position_embeddings, axis=1)
+    position_embeddings = position_embeddings.reshape([1, embedding_size, d, h, w])
+    position_embeddings = torch.from_numpy(position_embeddings).float()
 
     return position_embeddings
 
 # %% ../nbs/03_vitdet3dmae.ipynb 13
-def embed_spacings_in_position_embeddings(embeddings: np.ndarray, spacings: torch.Tensor):
+def embed_spacings_in_position_embeddings(embeddings: torch.Tensor, spacings: torch.Tensor):
     assert spacings.ndim == 2, "Please provide spacing information for each batch element"
-    num_embeddings, embedding_size = embeddings.shape
-    embeddings = embeddings.copy() * np.tile(np.repeat(spacings, embedding_size / 3), (num_embeddings, 1))
+    _, embedding_size, D, H, W = embeddings.shape
+    embeddings = embeddings.clone() * repeat(
+        spacings, f"B S -> B (S {int(embedding_size / 3)}) D H W", S=3, D=D, H=H, W=W
+    )
+
     return embeddings
 
 # %% ../nbs/03_vitdet3dmae.ipynb 15
@@ -253,13 +258,15 @@ class ViTDet3DMAEEmbeddings(nn.Module):
         image_size = pixel_values.shape[2:]
         grid_size, _ = self.config.get_grid_size_and_num_patches(image_size)
         position_embeddings = get_3d_position_embeddings(self.config.hidden_size, grid_size)
+        position_embeddings = position_embeddings.to(pixel_values.device)
+        # (1, hidden_size, z, y, x)
         if self.config.embed_spacing:
             position_embeddings = embed_spacings_in_position_embeddings(position_embeddings, spacings)
-        position_embeddings = torch.from_numpy(position_embeddings.T).float().unsqueeze(0).to(pixel_values.device)
+            # (b, hidden_size, z, y, x)
 
         # Add positional embeddings
         B, C, Z, Y, X = embeddings.shape
-        embeddings = embeddings + position_embeddings.reshape(1, C, Z, Y, X)
+        embeddings = embeddings + position_embeddings
 
         # Uniform sampling
         masks = self.uniform_sampling(embeddings)
@@ -426,12 +433,14 @@ class ViTDet3DMAEDecoder(nn.Module):
         pD, pH, pW = self.config.patch_size
         grid_size, _ = self.config.get_grid_size_and_num_patches((npD * pD, npH * pH, npW * pW))
         position_embeddings = get_3d_position_embeddings(self.config.decoder_hidden_size, grid_size)
+        position_embeddings = position_embeddings.to(x.device)
+        # (1, hidden_size, z, y, x)
         if self.config.embed_spacing:
             position_embeddings = embed_spacings_in_position_embeddings(position_embeddings, spacings)
-        position_embeddings = torch.from_numpy(position_embeddings.T).float().unsqueeze(0).to(x.device)
+            # (b, hidden_size, z, y, x)
 
         # add pos embed
-        hidden_states = x + position_embeddings.reshape(1, -1, npD, npH, npW)
+        hidden_states = x + position_embeddings
 
         # Flatten hidden states and reorder them
         hidden_states = rearrange(hidden_states, "b h npD npH npW -> b (npD npH npW) h")
