@@ -148,10 +148,8 @@ def get_3d_position_embeddings(embedding_size, grid_size, patch_size=(1, 1, 1)):
 # %% ../nbs/03_vitdet3dmae.ipynb 13
 def embed_spacings_in_position_embeddings(embeddings: torch.Tensor, spacings: torch.Tensor):
     assert spacings.ndim == 2, "Please provide spacing information for each batch element"
-    _, embedding_size, D, H, W = embeddings.shape
-    embeddings = embeddings.clone() * repeat(
-        spacings, f"B S -> B (S {int(embedding_size / 3)}) D H W", S=3, D=D, H=H, W=W
-    )
+    _, embedding_size, _, _, _ = embeddings.shape
+    embeddings = embeddings.clone() * repeat(spacings, f"B S -> B (S {int(embedding_size / 3)}) 1 1 1", S=3)
 
     return embeddings
 
